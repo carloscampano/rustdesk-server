@@ -13,7 +13,7 @@ pub struct Claims {
 }
 
 pub fn generate_token(user_id: u32, exp: i64) -> Result<String, String> {
-    println!("secret: {:}", SECRET.to_string());
+    // Security: Never log secrets - removed println! that exposed JWT secret
     let claims = Claims {
         user_id,
         exp: (chrono::Utc::now() + chrono::Duration::seconds(exp)).timestamp() as usize,
