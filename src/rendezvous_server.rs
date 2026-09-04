@@ -56,7 +56,7 @@ enum Data {
     RelayServers(RelayServers),
 }
 
-const REG_TIMEOUT: i32 = 30_000;
+const REG_TIMEOUT: i64 = 30_000;
 type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
 type WsSink = SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tungstenite::Message>;
 struct SafeWsSink {
@@ -439,23 +439,16 @@ impl RendezvousServer {
                         }
                     }
                 }
-                Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
-                    if self.pm.is_in_memory(&ph.id).await {
-                        self.handle_udp_punch_hole_request(addr, ph, key).await?;
-                    } else {
-                        // not in memory, fetch from db with spawn in case blocking me
-                        let mut me = self.clone();
-                        let key = key.to_owned();
-                        tokio::spawn(async move {
-                            allow_err!(me.handle_udp_punch_hole_request(addr, ph, &key).await);
-                        });
-                    }
+                Some(rendezvous_message::Union::PunchHoleRequest(_)) => {
+                    // UDP PunchHoleRequest is intentionally unsupported to avoid UDP reflection/amplification.
+                    // The supported client path sends PunchHoleRequest over TCP/WS.
+                    // Backport of rustdesk-server 1.1.16 (issue #634) and 109d9a23.
                 }
-                Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
-                    self.handle_hole_sent(phs, addr, Some(socket)).await?;
+                Some(rendezvous_message::Union::PunchHoleSent(_)) => {
+                    // UDP PunchHoleSent is intentionally unsupported to avoid UDP reflection/amplification
                 }
-                Some(rendezvous_message::Union::LocalAddr(la)) => {
-                    self.handle_local_addr(la, addr, Some(socket)).await?;
+                Some(rendezvous_message::Union::LocalAddr(_)) => {
+                    // UDP LocalAddr is intentionally unsupported to avoid UDP reflection/amplification
                 }
                 Some(rendezvous_message::Union::ConfigureUpdate(mut cu)) => {
                     if try_into_v4(addr).ip().is_loopback() && cu.serial > self.inner.serial {
@@ -673,7 +666,7 @@ impl RendezvousServer {
         let mut states = BytesMut::zeroed((peers.len() + 7) / 8);
         for (i, peer_id) in peers.iter().enumerate() {
             if let Some(peer) = self.pm.get_in_memory(peer_id).await {
-                let elapsed = peer.read().await.last_reg_time.elapsed().as_millis() as i32;
+                let elapsed = peer.read().await.last_reg_time.elapsed().as_millis() as i64;
                 // bytes index from left to right
                 let states_idx = i / 8;
                 let bit_idx = 7 - i % 8;
@@ -939,7 +932,7 @@ impl RendezvousServer {
         if let Some(peer) = self.pm.get(&id).await {
             let (elapsed, peer_addr) = {
                 let r = peer.read().await;
-                (r.last_reg_time.elapsed().as_millis() as i32, r.socket_addr)
+                (r.last_reg_time.elapsed().as_millis() as i64, r.socket_addr)
             };
             if elapsed >= REG_TIMEOUT {
                 let mut msg_out = RendezvousMessage::new();
