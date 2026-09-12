@@ -492,6 +492,7 @@ impl RendezvousServer {
         &mut self,
         bytes: &[u8],
         sink: &mut Option<Sink>,
+        dec: &mut Option<Encrypt>,
         addr: SocketAddr,
         key: &str,
         ws: bool,
@@ -632,6 +633,10 @@ impl RendezvousServer {
                     let key = secretbox::Key::from_slice(&symetric_key);
                     match key {
                         Some(key) => {
+                            // ponytail: separate decryptor. The sink (and its encryptor) is moved into
+                            // tcp_punch on the first PunchHoleRequest, so later messages on this stream
+                            // (the client's punch retries #2/#3) could not be decrypted and killed the connection.
+                            *dec = secretbox::Key::from_slice(&symetric_key).map(Encrypt::new);
                             if let Some(sink) = sink.as_mut() {
                                 match sink {
                                     Sink::Wss(s) => s.encrypt = Some(Encrypt::new(key)),
@@ -1385,6 +1390,7 @@ impl RendezvousServer {
         ws: bool,
     ) -> ResultType<()> {
         let mut sink;
+        let mut dec: Option<Encrypt> = None;
         if ws {
             use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
             let callback = |req: &Request, response: Response| {
@@ -1410,7 +1416,7 @@ impl RendezvousServer {
             }));
             while let Ok(Some(Ok(msg))) = timeout(30_000, b.next()).await {
                 if let tungstenite::Message::Binary(bytes) = msg {
-                    if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+                    if !self.handle_tcp(&bytes, &mut sink, &mut dec, addr, key, ws).await {
                         break;
                     }
                 }
@@ -1427,15 +1433,13 @@ impl RendezvousServer {
             }
             while let Ok(Some(Ok(mut bytes))) = timeout(30_000, b.next()).await {
                 // log::debug!("receive tcp data from {:?} {:?}", addr, bytes);
-                if let Some(Sink::Tss(s)) = sink.as_mut() {
-                    if let Some(key) = s.encrypt.as_mut() {
-                        if let Err(err) = key.dec(&mut bytes) {
-                            log::error!("dec tcp data from {:?} err: {:?}", addr, err);
-                            break;
-                        }
+                if let Some(d) = dec.as_mut() {
+                    if let Err(err) = d.dec(&mut bytes) {
+                        log::error!("dec tcp data from {:?} err: {:?}", addr, err);
+                        break;
                     }
                 }
-                if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+                if !self.handle_tcp(&bytes, &mut sink, &mut dec, addr, key, ws).await {
                     break;
                 }
             }
